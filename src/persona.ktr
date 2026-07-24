@@ -1,0 +1,155 @@
+// The layered-persona library: the persona machinery every character/assistant agent hand-rolled —
+// a persona is an ordered set of LAYERS, and this package assembles a role's per-turn injection note
+// from them and refines one layer under a hard character cap. The DATA is the caller's: each `layer`
+// (its name, header label, cap, seed, hard lines, and which roles see it) and the role set are values
+// the caller supplies; this package is a general machine over that data and knows nothing of any app.
+//
+// TWO MECHANISMS, both load-bearing:
+//   - ASSEMBLY (`assemble`): given a role, concatenate the layers that role SEES — in the given
+//     order — into one injection string. Each layer renders as a `[label]` header, its uneditable
+//     hard-line prefix when it has one, then its LIVE body (the stored refinement once one exists,
+//     the in-code seed until then). Because assembly reads the store fresh, a refinement is live on
+//     the very next turn and a compaction can never eat a persona.
+//   - REFINE (`refine`): overwrite one layer's body, REJECTED when it exceeds the layer's cap. The
+//     cap is the anti-personality-creep mechanism (not advice): an over-cap rewrite comes back with
+//     the cap and the overshoot, so the model compresses instead of accumulating, and a persona can
+//     evolve forever without ever growing monotonically. The hard lines are never stored and never
+//     touched — they ride above the refinable body at assembly, so the cap bounds a layer's GROWTH
+//     while the hard lines bound its ERASURE.
+//
+// Persona is a FACILITY in the store's sense: a workspace-relative toolset. Every read and write opens
+// the one fixed subdirectory scope (`use store.scope(path = "persona")` — this package's constant)
+// around its own store operations, and WHERE that subdirectory lands is the CALLING workspace's
+// decision. Dispatch a desk's turn under `use store.scope(path = "core")` and its persona lives at
+// `core/persona/...`, private to that desk; or serve `assemble`/`refine` from a proxy installed ABOVE
+// several desks that opens a shared subtree in its own body, and every desk assembles from the ONE
+// shared persona (the sharing geometry is the caller's, expressed as a named request the desks
+// cannot capture). There is no provider — the package serves nothing, it only performs.
+//
+// A refine is a WHOLE-LAYER overwrite of one key: last-write-wins, no read-modify-write, so it needs
+// no critical section of its own (the desk's own FIFO already serializes a role's turns). Every read
+// is TOTAL — a missing layer degrades to its seed and a malformed stored value renders as its JSON,
+// rather than throwing into an every-turn injection.
+
+@"One persona LAYER — the unit the caller supplies, and the whole DATA surface of this package. A
+layer is a named, capped, seeded slice of a persona: @name@ is its store key and the identifier
+`refine` targets, @label@ is the `[label]` header its assembled section wears, @cap@ is the HARD
+character ceiling `refine` enforces, @seed@ is the in-code default body shown until a refinement is
+stored, @roles@ is the set of role names that SEE this layer, and @hard_lines@ is an uneditable
+prefix prepended above the refinable body at every assembly (blank for a layer with none)."
+data layer(
+  @"The layer's store key AND the identifier `refine` targets, e.g. \"identity\"." name: string,
+  @"The `[label]` section header the assembled layer wears — may differ from @name@." label: string,
+  @"The HARD character cap `refine` enforces; the anti-creep ceiling." cap: integer,
+  @"The in-code default body, shown until a refinement is stored." seed: string,
+  @"The role names that SEE this layer — its per-role visibility." roles: array[string],
+  @"An uneditable prefix prepended above the refinable body at every assembly; it outlives any refine. Blank for a layer with no hard lines." hard_lines: string ?= "",
+)
+
+@"The facility's one subdirectory under the calling workspace — the constant every persona read and
+write prefixes its store key with. WHERE this lands is the calling workspace's decision (a desk's
+private corner, or a shared subtree a proxy opened above the desks): the package hard-codes the
+subdirectory NAME, never the full location."
+agent path() -> string {
+  "persona"
+}
+
+@"Render one stored layer value as text: a plain string as itself, anything else as its JSON — TOTAL,
+so a malformed stored value degrades rather than throwing into an every-turn assembly."
+agent render_value(value: unknown) -> string {
+  match (value) {
+    case string(text) -> text
+    case _ -> json.stringify(value = value)
+  }
+}
+
+@"The LIVE body of one layer: its stored value once a refinement exists (the store wins), its
+in-code @seed@ until then. Read TOTAL — a missing entry falls back to the seed, a malformed one
+renders as its JSON. The caller must already stand inside the facility scope (`assemble` opens it
+once around the whole read)."
+agent live_body(entry: layer) -> string {
+  match (store.get(key = entry.name)) {
+    case store.found(value => value) -> render_value(value = value)
+    case store.absent(key => _) -> entry.seed
+  }
+}
+
+@"One assembled persona section: the `[label]` header, then — when the layer carries hard lines —
+its uneditable prefix and a blank line, then the layer's live (stored-or-seed) body. The hard lines
+ride ABOVE the refinable body, so they survive whatever a refine did to it."
+agent render_layer(entry: layer) -> string {
+  let body = live_body(entry = entry)
+  if (string.is_blank(value = entry.hard_lines)) {
+    f"[${entry.label}]\n${body}"
+  } else {
+    f"[${entry.label}]\n${entry.hard_lines}\n\n${body}"
+  }
+}
+
+@"Assemble one ROLE's persona note: for each layer the role SEES (in the given order), render its
+`[label]` section — hard lines above the stored-or-seed body — then join the sections with a blank
+line, reading every layer fresh from the store under the facility scope. A layer the role does not
+see is skipped, so ONE ordered @layers@ list drives every role's note, and a role that sees nothing
+assembles to the empty string. Inject the result per turn: because it reads fresh, a refinement is
+live on the very next turn and a compaction can never eat a persona."
+agent assemble(layers: array[layer], role: string) -> string {
+  use store.scope(path = path())
+  @"Whether @value@ is one of this role's layers — the per-role visibility test (the parameter is
+  named `value` because `array.filter`'s predicate names it so, and parameter names are structural)."
+  agent sees_role(value: layer) -> boolean {
+    array.contains(target = value.roles, value = role)
+  }
+  let visible = array.filter(target = layers, keep = sees_role)
+  let sections = for (let entry in visible) {
+    next render_layer(entry = entry)
+  }
+  string.join(parts = sections, separator = "\n\n")
+}
+
+@"The layer named @name@ among @layers@, or null when none matches — the lookup behind `refine`'s
+dispatch. A linear scan; a persona has a handful of layers."
+agent find_layer(layers: array[layer], name: string) -> layer | null {
+  for (let entry in layers, var found: layer | null = null) {
+    if (entry.name == name) {
+      next with { found = entry }
+    } else {
+      next with { found = found }
+    }
+  } then (_layers) {
+    found
+  }
+}
+
+@"The @layers@' names, in order — the list `refine` shows when a supplied name matches no layer."
+agent layer_names(layers: array[layer]) -> array[string] {
+  for (let entry in layers) {
+    next entry.name
+  }
+}
+
+@"Refine one layer — the anti-creep write, and the model-facing tool result. Look @name@ up among
+@layers@: an unknown name answers a corrective note listing the layers (never a crash — the name is
+model-supplied); a @text@ over the layer's cap is REJECTED with the cap and the overshoot, so the
+model compresses instead of accumulating (the cap is the mechanism; it does not move); a text within
+cap OVERWRITES the whole layer body under the facility scope and confirms. The hard lines are not
+stored and not touched — they ride above the body at assembly, so a refine can retune a layer but
+never sand off its hard lines. A whole-key overwrite is last-write-wins and needs no critical
+section; WHERE it lands is the caller's scope plus this facility's own subdirectory."
+agent refine(layers: array[layer], name: string, text: string) -> string {
+  match (find_layer(layers = layers, name = name)) {
+    case null -> {
+      let names = string.join(parts = layer_names(layers = layers), separator = ", ")
+      f"(no persona layer is named ${name}; the layers you can refine are ${names}.)"
+    }
+    case entry -> {
+      let measured = string.length(value = text)
+      if (measured > entry.cap) {
+        f"(rejected: the ${entry.name} layer is capped at ${entry.cap} characters and this text is ${measured}. Compress it — cut examples before rules, merge overlapping lines — and try again. The cap is the anti-creep mechanism; it does not move.)"
+      } else {
+        use store.scope(path = path())
+        store.set(key = entry.name, value = text)
+        f"(the ${entry.name} layer is rewritten: ${measured}/${entry.cap} characters. It is live from the next turn of every agent that sees it.)"
+      }
+    }
+  }
+}
