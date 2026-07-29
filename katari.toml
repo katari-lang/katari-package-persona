@@ -1,6 +1,6 @@
 [package]
 name = "persona"
-version = "0.1.2"
+version = "0.1.3"
 description = "The layered-persona toolset for character and assistant agents: a persona is an ordered set of capped, seeded LAYERS with per-role visibility and optional uneditable hard lines; assemble one role's injection note from them, and refine one layer under a hard character cap (the anti-creep mechanism). A pure store facility - the layers live in the calling workspace's own persona/ corner; no provider, no knowledge of any app."
 
 [runtime]

@@ -54,6 +54,10 @@ agent path() -> string {
   "persona"
 }
 
+// `memory.render_note` is this same five-line total render, and the duplication is DELIBERATE — see
+// the note there for the whole argument. In short: what the two packages share is the SHAPE of a total
+// read of an untyped store, not a decision that could drift; and saying it once would cost both of
+// them their leaf standing (each depends on nothing today) for five lines that hold no policy.
 @"Render one stored layer value as text: a plain string as itself, anything else as its JSON — TOTAL,
 so a malformed stored value degrades rather than throwing into an every-turn assembly."
 agent render_value(value: unknown) -> string {

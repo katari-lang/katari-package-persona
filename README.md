@@ -12,14 +12,21 @@ performs.
 ## The layer
 
 ```katari
-persona.layer(
-  name = "soul",              // the store key, and what `refine` targets
-  label = "soul",             // the `[label]` header this section wears
-  cap = 2400,                 // the HARD character ceiling `refine` enforces
-  seed = soul_seed(),         // the in-code body, shown until a refinement is stored
-  roles = ["core", "herald"], // which roles SEE this layer
-  hard_lines = never_lie(),   // an uneditable prefix, above the refinable body (optional)
-)
+import persona
+
+agent soul_seed() -> string { "You are Kiri, a research assistant." }
+agent never_lie() -> string { "You never claim to be human." }
+
+agent soul() -> persona.layer {
+  persona.layer(
+    name = "soul",              // the store key, and what `refine` targets
+    label = "soul",             // the `[label]` header this section wears
+    cap = 2400,                 // the HARD character ceiling `refine` enforces
+    seed = soul_seed(),         // the in-code body, shown until a refinement is stored
+    roles = ["core", "herald"], // which roles SEE this layer
+    hard_lines = never_lie(),   // an uneditable prefix, above the refinable body (optional)
+  )
+}
 ```
 
 One ordered list of these drives every role's note. A layer a role does not see is skipped, so adding a
